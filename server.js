@@ -1,91 +1,108 @@
 const express = require("express");
-const cors = require('cors')
+const cors = require("cors");
 const bcrypt = require("bcryptjs");
-
 const app = express();
-app.use(cors())
+const db = require("knex")({
+  client: "pg",
+  connection: {
+    host: "127.0.0.1",
+    port: 5432,
+    user: "postgres",
+    database: "ztm-smartbrain",
+    password: "localhost",
+  },
+});
 
-const database = {
-  users: [
-    {
-      id: "123",
-      name: "John",
-      email: "john@gmail.com",
-      password: "cookies",
-      entries: 0,
-      joined: new Date(),
-    },
-    {
-      id: "124",
-      name: "Sally",
-      email: "sally@gmail.com",
-      password: "bananas",
-      entries: 0,
-      joined: new Date(),
-    },
-  ],
-};
+app.use(cors());
 
 app.use(express.json());
 
-app.get("/", (req, res) => {
-  res.send(database.users);
-});
-
-app.post("/signin", (req, res) => {
-  if (
-    req.body.email === database.users[0].email &&
-    req.body.password === database.users[0].password
-  ) {
-    res.json(database.users[0]);
-  } else {
-    res.status(400).json("error logging in");
+app.get("/", async (req, res) => {
+  try {
+    const users = await db("users").select();
+    res.json(users);
+  } catch (e) {
+    res.status(500).json("Internal server error");
   }
 });
 
-app.post("/register", (req, res) => {
+app.post("/signin", async (req, res) => {
+  const { email, password } = req.body;
+  try {
+    const [login] = await db("login").where({ email });
+    const hash = await bcrypt.compare(password, login.hash);
+    if (!login || !hash) {
+      return res.status(400).json("Invalid credentials");
+    }
+
+    const [user] = await db("users").where({ email });
+    if (!user) {
+      return res.status(400).json("User not found");
+    }
+
+    res.json(user);
+  } catch (e) {
+    res.status(500).json("Internal server error");
+  }
+});
+
+app.post("/register", async (req, res) => {
   const { email, name, password } = req.body;
-  const salt = bcrypt.genSaltSync(10)
-  const hash = bcrypt.hashSync(password, salt)
-  database.users.push({
-    id: "125",
-    name: name,
-    email: email,
-    password: hash,
-    entries: 0,
-    joined: new Date(),
-  });
-  res.status(200).json(database.users[database.users.length - 1]);
-});
+  try {
+    const salt = await bcrypt.genSalt(10);
+    const hash = await bcrypt.hash(password, salt);
+    const user = await db.transaction(async (trx) => {
+      await trx("login").insert({
+        email,
+        hash,
+      });
 
-app.get("/profile/:id", (req, res) => {
-  const { id } = req.params;
-  let found = false;
-  database.users.forEach((user) => {
-    if (user.id === id) {
-      found = true;
-      return res.json(user);
-    }
-  });
+      const [newUser] = await trx("users")
+        .insert({
+          name,
+          email,
+          joined: new Date(),
+        })
+        .returning("*");
 
-  if (!found) {
-    res.status(404).json("not found");
+      return newUser;
+    });
+
+    res.json(user);
+  } catch (e) {
+    res.status(500).json("Unable to register");
   }
 });
 
-app.put("/image", (req, res) => {
-  const { id } = req.body;
-  let found = false;
-  database.users.forEach((user) => {
-    if (user.id === id) {
-      found = true;
-      user.entries++;
-      return res.json(user);
+app.get("/profile/:id", async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [user] = await db("users").where({ id });
+    if (!user) {
+      return res.status(400).json("Profile not found");
     }
-  });
 
-  if (!found) {
-    res.status(404).json("not found");
+    res.json(user);
+  } catch (e) {
+    res.status(500).json("Internal server error");
+  }
+});
+
+app.put("/image", async (req, res) => {
+  const { id } = req.body;
+  try {
+    const [user] = await db("users")
+      .where({ id })
+      .increment("entries", 1)
+      .returning("*");
+
+    if (!user) {
+      return res.status(400).json("Profile not found");
+    }
+
+    res.json(user);
+  } catch (e) {
+    res.status(500).json("Internal server error");
   }
 });
 
